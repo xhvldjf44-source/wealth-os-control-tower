@@ -1,0 +1,26 @@
+app.patch("/api/orders/:id/approve", async (req, res) => {
+  try {
+    const orderId = Number(req.params.id);
+
+    const updatedDB = await updateDB((db) => {
+      db.orders = db.orders.map((order) =>
+        Number(order.id) === orderId
+          ? {
+              ...order,
+              status: "출고 완료",
+              shippedAt: new Date().toISOString(),
+            }
+          : order
+      );
+
+      return db;
+    });
+
+    res.json(updatedDB);
+  } catch (error) {
+    console.error("출고 승인 오류:", error);
+    res.status(500).json({
+      message: "출고 승인 중 오류 발생",
+    });
+  }
+});
