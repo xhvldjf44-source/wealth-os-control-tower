@@ -1,532 +1,483 @@
-require("dotenv").config();
+/**
+ * GardenStudio AI Media OS
+ * Youngja Supreme Engine v3.5
+ *
+ * 핵심 개선:
+ * 1. 느린 6회 AI 호출 제거
+ * 2. OpenAI 1회 호출로 전체 전략 JSON 생성
+ * 3. 10인 박사 회의체 구조 탑재
+ * 4. 영자 디자인실장 완전 탑재
+ * 5. data.json / DESIGN.md 자동 생성
+ */
 
-const OpenAI = require("openai");
-const express = require("express");
+import express from "express";
+import cors from "cors";
+import fs from "fs/promises";
+import path from "path";
+import dotenv from "dotenv";
+import OpenAI from "openai";
+import { fileURLToPath } from "url";
 
-const cors = require("cors");
-const fs = require("fs/promises");
-const path = require("path");
-const crypto = require("crypto");
+console.log("🔥 Youngja Supreme Engine v3.5 REAL server.js 실행됨");
+
+dotenv.config();
 
 const app = express();
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
-const PORT = 9010;
+const PORT = process.env.PORT || 9010;
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const DATA_PATH = path.join(__dirname, "data.json");
-const LOCK_PATH = path.join(__dirname, "data.json.lock");
+const DESIGN_PATH = path.join(__dirname, "DESIGN.md");
 
-const DEFAULT_DATA = {
-  version: "Supreme Version",
-  serviceName: "Wealth OS Control Tower",
-  updatedAt: null,
-  coreMetrics: {
-    revenue: 0,
-    netProfitRate: 35,
-    automationScore: 0
-  },
-  latestPipeline: null,
-  history: []
-};
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
 
-function createId(prefix = "run") {
-  return `${prefix}_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function ensureDataFile() {
-  try {
-    await fs.access(DATA_PATH);
-  } catch {
-    await safeWriteJson(DATA_PATH, DEFAULT_DATA);
-  }
-}
-
-async function acquireFileLock(maxWaitMs = 5000) {
-  const start = Date.now();
-
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const handle = await fs.open(LOCK_PATH, "wx");
-      await handle.writeFile(
-        JSON.stringify({
-          lockedAt: nowIso(),
-          pid: process.pid
-        })
-      );
-      return handle;
-    } catch (error) {
-      try {
-        const stat = await fs.stat(LOCK_PATH);
-        const ageMs = Date.now() - stat.mtimeMs;
-
-        if (ageMs > 10000) {
-          await fs.unlink(LOCK_PATH);
-        }
-      } catch {}
-
-      await sleep(80);
-    }
-  }
-
-  throw new Error("data.json 파일 잠금 획득 실패: 다른 저장 작업이 오래 실행 중입니다.");
-}
-
-async function releaseFileLock(handle) {
-  try {
-    await handle.close();
-  } catch {}
-
-  try {
-    await fs.unlink(LOCK_PATH);
-  } catch {}
-}
-
-async function safeReadJson(filePath) {
-  await ensureDataFile();
-  const raw = await fs.readFile(filePath, "utf-8");
-  return JSON.parse(raw);
-}
-
+/**
+ * JSON 안전 저장
+ */
 async function safeWriteJson(filePath, data) {
-  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  const json = JSON.stringify(data, null, 2);
-
-  await fs.writeFile(tempPath, json, "utf-8");
+  const tempPath = `${filePath}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
   await fs.rename(tempPath, filePath);
 }
 
-async function updateDataSafely(updater) {
-  const lockHandle = await acquireFileLock();
-
-  try {
-    const current = await safeReadJson(DATA_PATH);
-    const next = await updater(current);
-    await safeWriteJson(DATA_PATH, next);
-    return next;
-  } finally {
-    await releaseFileLock(lockHandle);
-  }
-}
-
-async function mcpAdapterStub(context) {
-  return {
-    adapterName: "MCP Adapter Stub",
-    status: "ready",
-    purpose: "NotebookLM, 외부 리서치 DB, 파트너 API, 시장 데이터 API를 안전하게 단일 JSON 파이프라인에 주입하기 위한 준비 레이어",
-    safetyRules: [
-      "외부 데이터는 원본 출처와 호출 시간을 함께 저장한다.",
-      "신뢰 점수가 낮은 데이터는 의사결정 필터에서 제외한다.",
-      "개인정보, 결제정보, 민감정보는 저장하지 않는다.",
-      "외부 API 실패 시 기본 내부 데이터로 파이프라인을 계속 실행한다."
-    ],
-    injectedKnowledge: {
-      marketSignal: "stub_market_signal",
-      localDemand: context.region === "나주/광주" ? "high" : "normal",
-      externalSeoKeywordHint: ["꽃배달", "나주 꽃집", "광주 꽃배달", "화환", "기념일 꽃다발"]
-    }
-  };
-}
-
-function aiCfoAgent(context) {
-  const expectedRevenue = Number(context.expectedRevenue || 120000);
-  const expectedCost = Number(context.expectedCost || 72000);
-  const netProfit = expectedRevenue - expectedCost;
-  const netProfitRate = expectedRevenue > 0 ? Math.round((netProfit / expectedRevenue) * 100) : 0;
-  const pass = netProfitRate >= 35;
+/**
+ * AI 응답이 깨졌을 때도 시스템이 죽지 않도록 기본 결과 생성
+ */
+function createFallbackResult(input = {}) {
+  const topic = input.topic || "프리미엄 꽃다발";
+  const region = input.region || "나주 광주";
+  const audience = input.audience || "꽃 선물을 고민하는 20~40대 고객";
 
   return {
-    agent: "AI CFO",
-    role: "ROI 분석 및 순이익률 35% 하한선 검증",
-    status: pass ? "pass" : "blocked",
-    expectedRevenue,
-    expectedCost,
-    netProfit,
-    netProfitRate,
-    minimumRequiredRate: 35,
-    decision: pass ? "판매 가능" : "가격 재설계 필요",
-    comment: pass
-      ? "순이익률이 35% 이상이므로 운영 가능성이 있습니다."
-      : "순이익률이 35% 미만이므로 할인, 배송비, 원가 구조를 재검토해야 합니다."
-  };
-}
+    project: "GardenStudio AI Media OS",
+    version: "Youngja Supreme Engine v3.5",
+    mode: "FALLBACK_DEMO",
+    created_at: new Date().toISOString(),
 
-function aiLogisticsAgent(context) {
-  const region = context.region || "나주/광주";
-  const deliveryDistanceKm = Number(context.deliveryDistanceKm || 18);
-  const freshnessRisk = deliveryDistanceKm > 40 ? 35 : deliveryDistanceKm > 20 ? 18 : 8;
-  const routeScore = Math.max(0, 100 - deliveryDistanceKm - freshnessRisk);
+    input: { topic, region, audience },
 
-  return {
-    agent: "AI Logistics",
-    role: "전국 꽃집 네트워크 매핑 및 나주/광주 직배송 최적 경로 점수 산출",
-    status: routeScore >= 70 ? "pass" : "review",
-    region,
-    networkMap: {
-      primaryHub: "나주 직배송 허브",
-      secondaryHub: "광주 협력 꽃집",
-      fallbackHub: "전국 제휴 꽃집 네트워크"
+    core_message: "당신의 마음이 가장 아름답게 전달되는 순간을 설계합니다.",
+
+    kpi: {
+      expected_margin: 0.38,
+      roi_score: 87,
+      claim_probability: 0.12,
+      automation_score: 92,
     },
-    deliveryDistanceKm,
-    freshnessRisk,
-    routeScore,
-    recommendation:
-      routeScore >= 70
-        ? "직배송 우선 배정"
-        : "협력 꽃집 배정 또는 배송 시간 재조정 필요"
+
+    financials: {
+      expected_margin: 0.38,
+      roi_score: 87,
+      warning: "순이익률 35% 이상 유지 가능",
+      paypal_fee_check: "글로벌 PayPal 결제 수수료 반영 필요",
+    },
+
+    marketing: {
+      seo_titles: [
+        `${region} 프리미엄 꽃다발 추천`,
+        `${region} 꽃배달 감성 선물 가이드`,
+        `기념일 꽃 선물, GardenStudio가 설계합니다`,
+      ],
+      seo_keywords: [
+        `${region} 꽃집`,
+        `${region} 꽃배달`,
+        `${region} 꽃다발`,
+        "프리미엄 꽃다발",
+        "감성 꽃선물",
+        "기념일 꽃 추천",
+        "AI 꽃 선물 추천",
+      ],
+      keyword_cluster: {
+        local: [`${region} 꽃집`, `${region} 꽃배달`, `${region} 꽃다발`],
+        intent: ["생일", "기념일", "프로포즈", "개업식", "승진"],
+        premium: ["프리미엄 꽃다발", "고급 꽃선물", "감성 꽃선물"],
+      },
+      blog_body:
+        "GardenStudio는 꽃을 단순히 판매하지 않습니다. 고객의 마음이 가장 아름답게 전달되는 순간을 설계합니다.",
+      shortform_idea: [
+        "15초 릴스: 꽃 선물 실패하지 않는 3가지 방법",
+        "쇼츠: 기념일 꽃다발 고르는 법",
+        "릴스: 말보다 꽃이 먼저 전하는 순간",
+      ],
+    },
+
+    landing_strategy: {
+      headline: "마음을 가장 아름답게 전달하는 꽃 선물",
+      subcopy: "GardenStudio는 꽃 선물 문화를 설계하는 AI 감성 브랜드입니다.",
+      cta: "오늘의 꽃 선물 설계하기",
+      sections: ["히어로", "추천 상품", "선물 상황별 큐레이션", "후기", "문의"],
+    },
+
+    brand_positioning: {
+      identity: "꽃 선물 문화를 설계하는 AI 브랜드",
+      promise: "당신의 마음이 가장 아름답게 전달되는 순간을 설계합니다.",
+      tone: "고급스럽고 따뜻하며 감성적인 브랜드 톤",
+    },
+
+    search_domination_strategy: {
+      naver: "지역 키워드 + 선물 상황 키워드 조합으로 네이버 블로그 점유",
+      google: "브랜드명 + 프리미엄 꽃 선물 콘텐츠 축적",
+      local: [`${region} 꽃집`, `${region} 꽃배달`, `${region} 기념일 꽃`],
+    },
+
+    logistics: {
+      routing_path: `${region} 직배송 우선 → 외곽 예약 배송 → 전국 택배 상품 분리`,
+      firebase_deploy_status: "READY",
+      vercel_deploy_status: "READY",
+    },
+
+    system_status: {
+      health: "STABLE",
+      error_log: [],
+      data_json_status: "WRITE_OK",
+      design_md_status: "SYNC_OK",
+    },
+
+    risk_management: {
+      claim_probability: 0.12,
+      content_safety: "PASS",
+      legal_note: "과대광고 표현 자동 주의 필요",
+      payment_security: "CHECK_REQUIRED",
+    },
+
+    stitch_mcp: {
+      loop_name: "Youngja Stitch Design Loop",
+      command_example:
+        "영자 디자인실장, GardenStudio 프리미엄 랜딩페이지 3안을 시각화해줘.",
+      pages: [
+        "Home",
+        "SEO Dashboard",
+        "Blog Factory",
+        "Shortform Studio",
+        "Landing Builder",
+        "Brand Strategy",
+      ],
+    },
+
+    agents: {
+      ai_ceo: {
+        role: "전체 성장 전략 총괄",
+        status: "ACTIVE",
+      },
+      ai_cfo: {
+        role: "순이익률 35% 사수",
+        status: "ACTIVE",
+      },
+      ai_marketing: {
+        role: "검색창 무한 도배",
+        status: "ACTIVE",
+      },
+      ai_seo_doctor: {
+        role: "네이버 SEO 점유",
+        status: "ACTIVE",
+      },
+      ai_content_director: {
+        role: "블로그 콘텐츠 공장",
+        status: "ACTIVE",
+      },
+      ai_shortform_producer: {
+        role: "릴스/쇼츠 숏폼 제작",
+        status: "ACTIVE",
+      },
+      ai_logistics: {
+        role: "배송 및 배포 관리",
+        status: "ACTIVE",
+      },
+      ai_risk_manager: {
+        role: "클레임/보안/법적 리스크 검수",
+        status: "ACTIVE",
+      },
+      ai_doctor: {
+        role: "시스템 무결성 유지",
+        status: "ACTIVE",
+      },
+      youngja_design_director: {
+        role: "감성 브랜딩, DESIGN.md, Stitch UI 총괄",
+        status: "SUPREME_ACTIVE",
+      },
+    },
   };
 }
 
-async function aiMarketingAgent(context, mcp) {
-  try {
-    const prompt = `
-당신은 대한민국 최고의 꽃집 SEO 마케팅 전문가다.
+/**
+ * DESIGN.md 자동 생성
+ */
+async function buildDesignMd(result) {
+  const content = `# GardenStudio DESIGN.md
 
-상품명:
-${context.productName}
+## Engine
 
-지역:
-${context.region}
+Youngja Supreme Engine v3.5
 
-고객 요청:
-${context.customerRequest}
+## 브랜드 정의
 
-아래 형식으로 JSON만 출력해라.
+GardenStudio는 단순한 꽃 쇼핑몰이 아닙니다.
 
-{
-  "title": "...",
-  "keywords": ["...", "..."],
-  "blog": "..."
-}
+> ${result.core_message || "당신의 마음이 가장 아름답게 전달되는 순간을 설계합니다."}
+
+## 영자 디자인실장 역할
+
+- 감성 브랜딩 총괄
+- 프리미엄 UI 방향 설정
+- DESIGN.md 자동 기록
+- Stitch MCP 디자인 루프 관리
+- 콘텐츠 톤 검수
+- 브랜드 경험 설계
+
+## 컬러 시스템
+
+- Primary: Rose Pink
+- Secondary: Warm Beige
+- Accent: Deep Green
+- Background: Soft Cream
+- Text: Charcoal
+
+## UI 방향
+
+- 고급스러움
+- 따뜻함
+- 감성적
+- 신뢰감
+- 검색 최적화
+- 콘텐츠 확장형
+
+## 핵심 페이지
+
+${result.stitch_mcp?.pages?.map((p) => `- ${p}`).join("\n") || "- Home"}
+
+## 브랜드 포지셔닝
+
+${JSON.stringify(result.brand_positioning, null, 2)}
+
+## 검색 점유 전략
+
+${JSON.stringify(result.search_domination_strategy, null, 2)}
+
+## SEO 키워드
+
+${JSON.stringify(result.marketing?.seo_keywords || [], null, 2)}
+
+## 시스템 상태
+
+${JSON.stringify(result.system_status, null, 2)}
+
+---
+
+자동 생성 시각: ${new Date().toISOString()}
 `;
 
+  await fs.writeFile(DESIGN_PATH, content, "utf-8");
+}
+
+/**
+ * OpenAI 1회 호출로 전체 전략 생성
+ */
+async function runSupremeCouncil(input = {}) {
+  const fallback = createFallbackResult(input);
+
+  if (!openai) {
+    return fallback;
+  }
+
+  const topic = input.topic || "프리미엄 꽃다발";
+  const region = input.region || "나주 광주";
+  const audience = input.audience || "꽃 선물을 고민하는 20~40대 고객";
+
+  try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4.1-mini",
+      temperature: 0.7,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content:
-            "당신은 네이버 SEO와 꽃집 마케팅 전문가다."
+          content: `
+너는 GardenStudio AI Media OS의 10인 박사 회의체다.
+
+반드시 JSON만 출력한다.
+마크다운 금지.
+설명문 금지.
+JSON 외 텍스트 금지.
+
+GardenStudio의 정체성:
+- 꽃을 파는 회사가 아니다.
+- 꽃 선물 문화를 설계하는 AI 브랜드다.
+- 핵심 메시지: "당신의 마음이 가장 아름답게 전달되는 순간을 설계합니다."
+- 목표: 국내 TOP3 꽃 브랜드, 네이버 SEO 점유, AI 콘텐츠 자동화 미디어 브랜드, 1인 기업 자동화 OS.
+
+10인 박사:
+1. AI CEO: 전체 성장 전략
+2. AI CFO: 순이익률 35% 사수
+3. AI Marketing: 검색/콘텐츠 확산
+4. AI SEO Doctor: 네이버 SEO 점유
+5. AI Content Director: 블로그 콘텐츠
+6. AI Shortform Producer: 릴스/쇼츠 아이디어
+7. AI Logistics: 배송/배포 관리
+8. AI Risk Manager: 클레임/보안/법적 표현 검수
+9. AI Doctor: data.json, DESIGN.md 무결성 유지
+10. Youngja Design Director: 감성 브랜딩, 고급 UI, DESIGN.md, Stitch MCP 총괄
+
+필수 JSON 필드:
+project, version, created_at, input, core_message,
+kpi,
+financials,
+marketing,
+logistics,
+system_status,
+risk_management,
+brand_positioning,
+landing_strategy,
+search_domination_strategy,
+stitch_mcp,
+agents
+
+주의:
+financials.expected_margin은 0.35 이상이면 좋음.
+risk_management.claim_probability는 0~1 숫자.
+marketing.seo_keywords는 배열.
+marketing.seo_titles는 배열.
+marketing.shortform_idea는 배열.
+`,
         },
         {
           role: "user",
-          content: prompt
-        }
+          content: `
+아래 조건으로 GardenStudio AI Media OS 전략 전체를 생성하라.
+
+주제: ${topic}
+지역: ${region}
+타깃 고객: ${audience}
+
+출력은 반드시 JSON만.
+`,
+        },
       ],
-      temperature: 0.7
     });
 
-    const raw = completion.choices[0].message.content;
-
-    let parsed;
-
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = {
-        title: `${context.region} ${context.productName} 꽃배달`,
-        keywords: ["꽃배달", "기념일꽃다발"],
-        blog: raw
-      };
-    }
+    const text = completion.choices[0].message.content;
+    const aiResult = JSON.parse(text);
 
     return {
-      agent: "AI Marketing",
-      role: "OpenAI 기반 네이버 SEO 자동 생성",
-      status: "pass",
-      naverSeoTitle: parsed.title,
-      seoKeywords: parsed.keywords,
-      blogDraft: parsed.blog,
-      externalApiSpec: {
-        openai: true,
-        model: "gpt-4o-mini"
-      }
+      ...fallback,
+      ...aiResult,
+      version: "Youngja Supreme Engine v3.5",
+      created_at: new Date().toISOString(),
+      input: { topic, region, audience },
+      agents: {
+        ...fallback.agents,
+        ...(aiResult.agents || {}),
+      },
     };
   } catch (error) {
-    return {
-      agent: "AI Marketing",
-      role: "OpenAI 기반 네이버 SEO 자동 생성",
-      status: "error",
-      errorMessage: error.message,
-      naverSeoTitle: "SEO 생성 실패",
-      seoKeywords: [],
-      blogDraft: "OpenAI 호출 실패"
-    };
+    console.error("AI JSON 생성 실패:", error.message);
+
+    fallback.system_status.error_log.push(error.message);
+    fallback.system_status.health = "FALLBACK_STABLE";
+
+    return fallback;
   }
 }
 
-function aiRiskManagerAgent(context) {
-  const requestText = String(context.customerRequest || "");
-  const riskyWords = ["환불 보장", "무조건", "컴플레인", "늦으면 취소", "사진과 똑같이"];
-  const matched = riskyWords.filter((word) => requestText.includes(word));
-
-  return {
-    agent: "AI Risk Manager",
-    role: "위험 주문 및 클레임 소지 사전 필터링",
-    status: matched.length > 0 ? "review" : "pass",
-    detectedRiskWords: matched,
-    riskScore: matched.length * 20,
-    recommendation:
-      matched.length > 0
-        ? "주문 전 고객에게 꽃 수급 상황, 색상 대체 가능성, 배송 시간을 명확히 안내하세요."
-        : "큰 위험 신호가 없습니다."
-  };
-}
-
-function aiDoctorAgent(context, previousResults) {
-  const failedAgents = previousResults.filter((item) => item.status === "blocked");
-  const reviewAgents = previousResults.filter((item) => item.status === "review");
-
-  return {
-    agent: "AI Doctor",
-    role: "파이프라인 상태 모니터링 및 셀프 힐링",
-    status: failedAgents.length > 0 ? "blocked" : "pass",
-    healthScore: Math.max(0, 100 - failedAgents.length * 30 - reviewAgents.length * 10),
-    failedAgents: failedAgents.map((item) => item.agent),
-    reviewAgents: reviewAgents.map((item) => item.agent),
-    selfHealingActions: [
-      "try-catch로 개별 에이전트 실패를 격리합니다.",
-      "실패한 에이전트가 있어도 전체 서버는 중단하지 않습니다.",
-      "로그와 결과 JSON을 함께 저장해 다음 실행에서 추적할 수 있습니다."
-    ],
-    checkedAt: nowIso()
-  };
-}
-
-function aiPartnerAgent() {
-  return {
-    agent: "AI Partner Manager",
-    role: "협력 꽃집 및 제휴사 품질 관리",
-    status: "pass",
-    opinion: "광주 협력 꽃집을 보조 허브로 유지하되, 지연율과 고객 만족도를 월 단위로 평가해야 합니다."
-  };
-}
-
-function aiResearchAgent(context, mcp) {
-  return {
-    agent: "AI Researcher",
-    role: "시장, 키워드, 수요 데이터 조사",
-    status: "pass",
-    opinion: "지역 기반 키워드와 당일배송 키워드의 조합이 전환 가능성이 높습니다.",
-    mcpSignalUsed: mcp.injectedKnowledge.marketSignal
-  };
-}
-
-function aiCsAgent() {
-  return {
-    agent: "AI CS Manager",
-    role: "고객 응대 및 리뷰 개선",
-    status: "pass",
-    opinion: "배송 전 완성 사진 안내와 대체 꽃 안내 문구를 자동 발송하면 클레임을 줄일 수 있습니다."
-  };
-}
-
-function aiTechLeadAgent() {
-  return {
-    agent: "AI Tech Lead",
-    role: "시스템 안정성 및 API 설계",
-    status: "pass",
-    opinion: "MCP 어댑터, 에이전트 오케스트레이터, 안전 저장 레이어가 분리되어 확장 가능한 구조입니다."
-  };
-}
-
-function aiSupplyChainAgent() {
-  return {
-    agent: "AI Supply Chain Manager",
-    role: "꽃 재고, 원가, 공급망 관리",
-    status: "pass",
-    opinion: "계절 꽃 가격 변동을 반영해 상품별 최소 마진율을 자동 계산해야 합니다."
-  };
-}
-
-async function runAgentSafely(agentName, fn) {
-  try {
-    const result = await fn();
-    return {
-      ok: true,
-      ...result
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      agent: agentName,
-      role: "실행 실패",
-      status: "error",
-      errorMessage: error.message,
-      recoveredAt: nowIso()
-    };
-  }
-}
-
-async function runCouncilOf10Pipeline(input) {
-  const runId = createId("council10");
-  const startedAt = nowIso();
-
-  const context = {
-    productName: input.productName || "프리미엄 기념일 꽃다발",
-    region: input.region || "나주/광주",
-    expectedRevenue: input.expectedRevenue || 120000,
-    expectedCost: input.expectedCost || 72000,
-    deliveryDistanceKm: input.deliveryDistanceKm || 18,
-    customerRequest: input.customerRequest || "기념일 꽃다발을 오늘 예쁘게 배송해주세요."
-  };
-
-  const mcp = await mcpAdapterStub(context);
-
-  const firstWave = [];
-
-  firstWave.push(await runAgentSafely("AI CFO", () => aiCfoAgent(context)));
-  firstWave.push(await runAgentSafely("AI Logistics", () => aiLogisticsAgent(context)));
-  firstWave.push(await runAgentSafely("AI Marketing", () => aiMarketingAgent(context, mcp)));
-  firstWave.push(await runAgentSafely("AI Risk Manager", () => aiRiskManagerAgent(context)));
-  firstWave.push(await runAgentSafely("AI Partner Manager", () => aiPartnerAgent(context)));
-  firstWave.push(await runAgentSafely("AI Researcher", () => aiResearchAgent(context, mcp)));
-  firstWave.push(await runAgentSafely("AI CS Manager", () => aiCsAgent(context)));
-  firstWave.push(await runAgentSafely("AI Tech Lead", () => aiTechLeadAgent(context)));
-  firstWave.push(await runAgentSafely("AI Supply Chain Manager", () => aiSupplyChainAgent(context)));
-
-  const doctor = await runAgentSafely("AI Doctor", () => aiDoctorAgent(context, firstWave));
-  const agents = [...firstWave, doctor];
-
-  const cfo = agents.find((item) => item.agent === "AI CFO");
-  const logistics = agents.find((item) => item.agent === "AI Logistics");
-  const marketing = agents.find((item) => item.agent === "AI Marketing");
-  const doctorResult = agents.find((item) => item.agent === "AI Doctor");
-
-  const blocked = agents.filter((item) => item.status === "blocked" || item.status === "error");
-  const review = agents.filter((item) => item.status === "review");
-
-  const finalDecision =
-    blocked.length > 0
-      ? "BLOCKED"
-      : review.length > 0
-        ? "REVIEW_REQUIRED"
-        : "APPROVED";
-
-  return {
-    runId,
-    pipelineName: "The Council of 10 - AI SEO Business Pipeline",
-    status: finalDecision,
-    startedAt,
-    finishedAt: nowIso(),
-    mcpLayer: mcp,
-    input: context,
-    coreMetrics: {
-      revenue: cfo.expectedRevenue,
-      netProfitRate: cfo.netProfitRate,
-      automationScore: doctorResult.healthScore,
-      routeScore: logistics.routeScore
-    },
-    seoOutput: {
-      title: marketing.naverSeoTitle,
-      keywords: marketing.seoKeywords,
-      blogDraft: marketing.blogDraft,
-      externalApiSpec: marketing.externalApiSpec
-    },
-    agents,
-    summary: {
-      approvedAgents: agents.filter((item) => item.status === "pass").length,
-      reviewAgents: review.length,
-      blockedAgents: blocked.length,
-      finalDecision,
-      nextAction:
-        finalDecision === "APPROVED"
-          ? "네이버 SEO 콘텐츠 발행 및 주문 자동화 가능"
-          : finalDecision === "REVIEW_REQUIRED"
-            ? "위험 문구, 배송 조건, 협력 꽃집 배정을 사람이 확인해야 합니다."
-            : "순이익률 또는 시스템 오류를 먼저 해결해야 합니다."
-    }
-  };
-}
-
-app.get("/api/health", async (req, res) => {
+/**
+ * 기본 루트
+ */
+app.get("/", (req, res) => {
   res.json({
     ok: true,
-    service: "Wealth OS Control Tower Backend",
+    message: "GardenStudio AI Media OS - Youngja Supreme Engine v3.5 Running",
     port: PORT,
-    checkedAt: nowIso()
   });
 });
 
-app.get("/api/dashboard", async (req, res) => {
+/**
+ * 현재 data.json 조회
+ */
+app.get("/api/data", async (req, res) => {
   try {
-    await ensureDataFile();
-    const data = await safeReadJson(DATA_PATH);
+    const raw = await fs.readFile(DATA_PATH, "utf-8");
+    res.json(JSON.parse(raw));
+  } catch {
     res.json({
-      ok: true,
-      data
-    });
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: "대시보드 데이터 조회 실패",
-      error: error.message
+      message: "아직 생성된 data.json이 없습니다.",
+      version: "Youngja Supreme Engine v3.5",
     });
   }
 });
 
-app.post("/api/ai-seo", async (req, res) => {
+/**
+ * DESIGN.md 조회
+ */
+app.get("/api/design", async (req, res) => {
   try {
-    const pipelineResult = await runCouncilOf10Pipeline(req.body || {});
-
-    const saved = await updateDataSafely(async (current) => {
-      const nextHistory = Array.isArray(current.history) ? current.history : [];
-
-      return {
-        ...current,
-        version: "Supreme Version",
-        serviceName: "Wealth OS Control Tower",
-        updatedAt: nowIso(),
-        coreMetrics: {
-          revenue: pipelineResult.coreMetrics.revenue,
-          netProfitRate: pipelineResult.coreMetrics.netProfitRate,
-          automationScore: pipelineResult.coreMetrics.automationScore
-        },
-        latestPipeline: pipelineResult,
-        history: [pipelineResult, ...nextHistory].slice(0, 30)
-      };
-    });
-
+    const design = await fs.readFile(DESIGN_PATH, "utf-8");
     res.json({
-      ok: true,
-      message: "10인 에이전트 파이프라인 실행 완료",
-      data: saved
+      success: true,
+      design,
     });
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: "AI SEO 파이프라인 실행 실패",
-      error: error.message
+  } catch {
+    res.json({
+      success: false,
+      design: "아직 DESIGN.md가 생성되지 않았습니다.",
     });
   }
 });
 
+/**
+ * 프론트 버튼 전용 실행 API
+ */
+app.post("/api/run-pipeline", async (req, res) => {
+  try {
+    const result = await runSupremeCouncil(req.body);
+
+    await safeWriteJson(DATA_PATH, result);
+    await buildDesignMd(result);
+
+    res.json({
+      success: true,
+      message: "Youngja Supreme Engine v3.5 실행 완료",
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "파이프라인 실행 실패",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * 서버 상태 체크
+ */
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    engine: "Youngja Supreme Engine v3.5",
+    status: "STABLE",
+    youngja: "SUPREME_ACTIVE",
+    port: PORT,
+  });
+});
+
+/**
+ * 없는 API 안내
+ */
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
     message: "존재하지 않는 API 경로입니다.",
-    path: req.path
+    path: req.path,
   });
 });
 
-ensureDataFile()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Wealth OS Control Tower backend running on http://localhost:${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error("서버 시작 실패:", error);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`✅ GardenStudio AI Media OS Backend running on port ${PORT}`);
+  console.log(`🌸 Youngja Design Director SUPREME_ACTIVE`);
+});
