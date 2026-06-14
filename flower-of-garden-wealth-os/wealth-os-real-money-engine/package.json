@@ -1,0 +1,11 @@
+﻿{
+  "name": "wealth-os-real-money-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "hunt": "node src/product-hunter.js",
+    "queue": "node src/upload-queue.js"
+  }
+}
